@@ -1,0 +1,176 @@
+---
+type Collaborator = {
+  _key: string;
+  name: string;
+  href?: string;
+};
+type Entry = {
+  _key: string;
+  date?: string;
+  title?: string;
+  column2?: string;
+  column3?: string;
+  description?: string;
+  projectId?: string;
+  anchorId?: string;
+  collaborators?: Collaborator[];
+};
+type Category = { _id: string; title: string; entries?: Entry[] };
+
+interface Props {
+  category: Category;
+  /** hide the section title row (used for References, whose "title" is the category nav) */
+  showTitle?: boolean;
+  /** projectId → auto figure label matching the gallery order (References);
+   *  entries with a linked project use this over column3, linked to /#img-N */
+  figures?: Record<string, { label: string; start: number }>;
+}
+
+const { category, showTitle = true, figures } = Astro.props;
+
+// auto figure (label + gallery deep link) when the entry has a linked project
+const figureFor = (entry: Entry) =>
+  entry.projectId ? figures?.[entry.projectId] : undefined;
+---
+
+<article>
+  {showTitle && <h3 class="category-title">{category.title}</h3>}
+  <section class="table-body">
+    {
+      category.entries?.map((entry) => (
+        <div class="entry" id={entry.anchorId}>
+          {entry.date && <div class="table-row-date">{entry.date}</div>}
+          <div class="table-row">
+            {entry.title && (
+              <div class="element element-title">{entry.title}</div>
+            )}
+            {entry.column2 && (
+              <div class="element element-column-2">{entry.column2}</div>
+            )}
+            {(figureFor(entry) || entry.column3) && (
+              <div class="element element-column-3">
+                {figureFor(entry) ? (
+                  <a href={`/#img-${figureFor(entry)!.start}`}>
+                    {figureFor(entry)!.label}
+                  </a>
+                ) : (
+                  entry.column3
+                )}
+              </div>
+            )}
+            {entry.collaborators?.length ? (
+              <div class="element description">
+                <p>
+                  {entry.collaborators.map((collaborator, i) => (
+                    <>
+                      {collaborator.href ? (
+                        <a href={collaborator.href}>{collaborator.name}</a>
+                      ) : (
+                        collaborator.name
+                      )}
+                      {i < entry.collaborators!.length - 1 && ", "}
+                    </>
+                  ))}
+                </p>
+              </div>
+            ) : (
+              entry.description && (
+                <div class="element description">
+                  {entry.description
+                    .split(/\n+/)
+                    .filter((para) => para.trim())
+                    .map((para) => (
+                      <p>{para.trim()}</p>
+                    ))}
+                </div>
+              )
+            )}
+          </div>
+        </div>
+      ))
+    }
+  </section>
+</article>
+
+<style lang="scss">
+  .category-title {
+    padding: 5px 0;
+    border-bottom: 1px solid black;
+  }
+
+  .table-body {
+    /* tag-group anchors land below both sticky bars (nav + tags row);
+       the height vars cascade down from .results on the page.
+       -2px tucks the group under the tags row so fractional row heights
+       can't round into a white sliver above the group */
+    .entry[id] {
+      scroll-margin-top: calc(
+        var(--table-head-h, 33px) + var(--tags-list-h, 30px) - 2px
+      );
+    }
+
+    .table-row-date {
+      padding: 5px 0 0 2em;
+    }
+    .table-row {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      padding: 5px 0;
+      gap: 10px;
+      border-bottom: 1px solid black;
+
+      /* explicit columns so cells stay aligned even when some are empty */
+      .element-title {
+        grid-column: 1 / 2;
+      }
+      .element-column-2 {
+        grid-column: 2 / 3;
+      }
+      .element-column-3 {
+        grid-column: 3 / 4;
+      }
+
+      .description {
+        grid-column: 4 / -1;
+
+        /* a description alone in its row (e.g. Collaborators) spans full width */
+        &:only-child {
+          grid-column: 1 / -1;
+        }
+
+        /* indent every paragraph except the first */
+        p + p {
+          text-indent: 2em;
+        }
+      }
+    }
+  }
+
+  @media (max-width: 968px) {
+    .table-body .table-row {
+      grid-template-columns: repeat(2, 1fr);
+
+      /* Make the title span both mobile columns */
+      .element-title {
+        grid-column: 1 / 2;
+      }
+
+      /* Keep the materials/column 2 on the left */
+      .element-column-2 {
+        grid-column: 1 / 2;
+      }
+
+      /* Keep the image references/column 3 on the right */
+      .element-column-3 {
+        grid-column: 2 / -1;
+      }
+
+      /* Make the description or collaborators span both columns */
+      .description {
+        grid-column: 1 / -1;
+        margin-top: 5px; /* Optional: adds a little breathing room above the text */
+        margin-bottom: 5px;
+      }
+    }
+  }
+</style>

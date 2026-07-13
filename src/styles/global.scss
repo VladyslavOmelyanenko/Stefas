@@ -1,0 +1,22 @@
+html {
+  scroll-behavior: smooth; /* anchor links glide instead of jumping */
+}
+
+@font-face {
+  font-family: "Lars Pro";
+  src: url("/fonts/lars.ttf") format("truetype");
+  font-style: normal;
+  font-display: block;
+  font-weight: 400;
+}
+
+body {
+  font-family: "Lars Pro";
+  font-size: var(--font-size);
+  line-height: 1.2;
+  // color: white;
+}
+
+a:hover {
+  text-decoration: underline;
+}

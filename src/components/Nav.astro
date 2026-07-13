@@ -1,0 +1,46 @@
+---
+interface Props {
+  /** "fixed" stays on screen while scrolling; "absolute" scrolls away with the page */
+  position?: "fixed" | "absolute";
+}
+
+const { position = "fixed" } = Astro.props;
+---
+
+<nav class:list={["nav", position === "absolute" && "nav-absolute"]}>
+  <a href="/">Stefaniia Bodnia</a>
+  <slot></slot>
+</nav>
+
+<style lang="scss">
+  .nav {
+    display: grid;
+    position: fixed;
+    top: var(--body-margin);
+    left: var(--body-margin);
+    width: calc(100vw - var(--body-margin) * 2);
+    grid-template-columns: repeat(6, 1fr);
+    z-index: 100; /* above the gallery (swiper sets z-index: 1 on itself) */
+    transition: color 0.3s ease; /* soften black↔white flips over the gallery */
+  }
+
+  .nav-absolute {
+    position: absolute;
+  }
+
+  /* grid items stretch to their full column by default — shrink links
+     to their text so hover/underline only triggers on the words
+     (:global reaches slotted links like "Index" too) */
+  .nav > a,
+  .nav > :global(a) {
+    justify-self: start;
+  }
+
+  /* six columns are too narrow on a phone — the brand would overlap
+     the Index link sitting in the next column */
+  @media (max-width: 968px) {
+    .nav {
+      grid-template-columns: repeat(2, 1fr);
+    }
+  }
+</style>

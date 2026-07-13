@@ -1,0 +1,476 @@
+---
+import { sanityClient, urlFor } from "../lib/sanity";
+// imported here (not in the <script>) so the carousel layout is styled
+// on first paint — otherwise slides stack vertically until the JS loads
+import "swiper/css";
+
+type MediaItem = {
+  _key: string;
+  _type: "image" | "file";
+  asset?: { _ref: string };
+  url?: string;
+  dimensions?: { width: number; height: number };
+  palette?: string;
+};
+
+type Project = {
+  _id: string;
+  title: string;
+  images?: MediaItem[];
+};
+
+// GROQ: get every project with its media items.
+// `...` spreads each item's fields (_type, _key, asset ref, hotspot/crop),
+// `url` resolves the file URL for videos, and `dimensions` gives each
+// image's original size so the browser can reserve layout before loading.
+const projects = await sanityClient.fetch<Project[]>(`
+  *[_type == "project"] | order(orderRank){
+    _id,
+    title,
+    images[]{
+      ...,
+      "url": asset->url,
+      "dimensions": asset->metadata.dimensions{ width, height },
+      "palette": asset->metadata.palette.dominant.background
+    }
+  }
+`);
+
+// responsive variants served via srcset (heights; the browser picks by width)
+const SRCSET_HEIGHTS = [800, 1200, 1600, 2000];
+
+const imageSrcset = (item: MediaItem) =>
+  SRCSET_HEIGHTS.map((h) => {
+    const ratio = item.dimensions
+      ? item.dimensions.width / item.dimensions.height
+      : 1;
+    return `${urlFor(item).height(h).auto("format").url()} ${Math.round(h * ratio)}w`;
+  }).join(", ");
+
+// Swiper wants a flat list of slides; each project's first slide
+// carries the caption so it scrolls along with that image
+const slides = projects.flatMap((project) =>
+  (project.images ?? []).map((item, index) => ({
+    item,
+    title: project.title,
+    isFirstOfProject: index === 0,
+  })),
+);
+
+// 0 (black) … 1 (white) perceived brightness of a hex color
+const hexLuminance = (hex?: string): number | null => {
+  if (!hex) return null;
+  const m = hex.replace("#", "");
+  const full = m.length === 3 ? [...m].map((c) => c + c).join("") : m;
+  const n = parseInt(full, 16);
+  if (Number.isNaN(n)) return null;
+  const r = (n >> 16) & 255;
+  const g = (n >> 8) & 255;
+  const b = n & 255;
+  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+};
+
+// initial guess from the image's dominant color; the client script
+// refines it by sampling the actual pixels behind the text
+const textColorFor = (luma: number | null) =>
+  luma !== null && luma > 0.5 ? "black" : "white";
+---
+
+<section class="projects-gallery swiper">
+  <div class="swiper-wrapper">
+    {
+      slides.map(({ item, title, isFirstOfProject }, index) => (
+        <div
+          class="swiper-slide"
+          data-hash={`img-${index + 1}`}
+          data-luma={hexLuminance(item.palette)}
+          style={item.palette && `background-color: ${item.palette}`}
+        >
+          {item._type === "file" ? (
+            <video
+              class="project-media-item"
+              src={item.url}
+              crossorigin="anonymous"
+              muted
+              loop
+              playsinline
+              autoplay
+            />
+          ) : (
+            <img
+              class="project-media-item"
+              src={urlFor(item).height(1200).auto("format").url()}
+              srcset={imageSrcset(item)}
+              sizes="auto"
+              width={item.dimensions?.width}
+              height={item.dimensions?.height}
+              crossorigin="anonymous"
+              alt=""
+              loading="lazy"
+              decoding="async"
+            />
+          )}
+          {isFirstOfProject && (
+            <h2
+              class="project-caption"
+              style={`color: ${textColorFor(hexLuminance(item.palette))}`}
+            >
+              {title}
+            </h2>
+          )}
+        </div>
+      ))
+    }
+  </div>
+</section>
+
+<style>
+  .projects-gallery {
+    width: 100%;
+    height: 100vh;
+    background-color: black;
+  }
+
+  .swiper-slide {
+    position: relative; /* anchor for the caption */
+    width: auto; /* natural media width — Swiper aligns each left edge */
+    height: 100vh;
+  }
+
+  .project-media-item {
+    display: block;
+    height: 100vh;
+    width: auto;
+    object-fit: cover;
+    transition: opacity 0.25s ease;
+  }
+
+  /* while traveling to a linked image, the photos give way to their
+     palette blocks (on the slide divs), like the reference site */
+  .projects-gallery.traveling .project-media-item {
+    opacity: 0;
+  }
+
+  /* ── mobile: the same swiper, turned vertical ── */
+  @media (max-width: 968px) {
+    .projects-gallery {
+      height: 100vh;
+      height: 100dvh; /* account for the collapsing browser chrome */
+    }
+
+    .swiper-slide {
+      width: 100%;
+      height: auto; /* natural media height — swiper snaps each top edge */
+    }
+
+    .project-media-item {
+      width: 100%;
+      height: auto;
+    }
+
+    /* caption overlays the top of its image, tucked under the fixed nav;
+       its color still comes from the sampled pixels behind it */
+    .project-caption {
+      position: absolute;
+      top: calc(2rem + 10px);
+      bottom: auto;
+      left: 0;
+      width: 100%;
+      max-width: none;
+      /* padding: 0 var(--body-margin); */
+    }
+  }
+
+  /* bottom-left corner of the project's first image, scrolls with it */
+  .project-caption {
+    position: absolute;
+    bottom: var(--body-margin);
+    left: var(--body-margin);
+    z-index: 1; /* above neighbouring slides if the text is wider than its image */
+    width: max-content;
+    max-width: 90vw;
+    transition: color 0.3s ease; /* soften black↔white flips */
+  }
+</style>
+
+<script>
+  import Swiper from "swiper";
+  import { HashNavigation, Keyboard, Mousewheel } from "swiper/modules";
+
+  const gallery = document.querySelector<HTMLElement>(".projects-gallery");
+  const nav = document.querySelector<HTMLElement>(".nav");
+
+  // ── adaptive text color ────────────────────────────────────────────
+  // Sample the exact image pixels sitting behind the nav text and behind
+  // each caption; the text flips black/white by that region's brightness.
+
+  type Media = HTMLImageElement | HTMLVideoElement;
+  type Box = { left: number; top: number; width: number; height: number };
+
+  const naturalSize = (media: Media) =>
+    media instanceof HTMLVideoElement
+      ? { w: media.videoWidth, h: media.videoHeight }
+      : { w: media.naturalWidth, h: media.naturalHeight };
+
+  // average 0…1 luminance of the source pixels behind `box`, where `box`
+  // is in on-screen CSS px relative to the media's rendered top-left.
+  // Maps through the object-fit: cover scale + center-crop, so it reads
+  // exactly what the viewer sees. null → not ready / CORS-tainted.
+  const luminanceBehind = (media: Media, box: Box): number | null => {
+    const { w: nw, h: nh } = naturalSize(media);
+    const rw = media.offsetWidth;
+    const rh = media.offsetHeight;
+    if (!nw || !nh || !rw || !rh) return null;
+
+    // cover: css px per source px, and the source offset that got cropped
+    const displayScale = Math.max(rw / nw, rh / nh);
+    const cropX = (nw - rw / displayScale) / 2;
+    const cropY = (nh - rh / displayScale) / 2;
+
+    let sx = cropX + box.left / displayScale;
+    let sy = cropY + box.top / displayScale;
+    let sw = box.width / displayScale;
+    let sh = box.height / displayScale;
+
+    // clamp to the source bounds
+    sx = Math.max(0, Math.min(sx, nw - 1));
+    sy = Math.max(0, Math.min(sy, nh - 1));
+    sw = Math.max(1, Math.min(sw, nw - sx));
+    sh = Math.max(1, Math.min(sh, nh - sy));
+
+    try {
+      const SIZE = 16; // downsample: 256 pixels is plenty for an average
+      const canvas = document.createElement("canvas");
+      canvas.width = SIZE;
+      canvas.height = SIZE;
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      if (!ctx) return null;
+      ctx.drawImage(media, sx, sy, sw, sh, 0, 0, SIZE, SIZE);
+      const data = ctx.getImageData(0, 0, SIZE, SIZE).data;
+      let sum = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        sum += 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+      }
+      return sum / (data.length / 4) / 255;
+    } catch {
+      return null; // tainted canvas or decode issue → keep the SSR fallback
+    }
+  };
+
+  const textColorFor = (luma: number) => (luma > 0.5 ? "black" : "white");
+
+  const PAD = 8; // sample a little beyond the text box
+
+  // measure a slide's media and cache the results on the slide element
+  const analyzeSlide = (slide: HTMLElement) => {
+    if (slide.dataset.sampled) return;
+    const media = slide.querySelector<Media>("img, video");
+    if (!media) return;
+
+    // behind the nav text: the brand link's fixed on-screen box — the
+    // active slide's left edge aligns with the viewport's, so viewport
+    // coords ≡ slide-local coords for the slide being displayed
+    const brand = nav?.querySelector("a");
+    if (brand) {
+      const b = brand.getBoundingClientRect();
+      const luma = luminanceBehind(media, {
+        left: b.left - PAD,
+        top: b.top - PAD,
+        width: b.width + PAD * 2,
+        height: b.height + PAD * 2,
+      });
+      if (luma !== null) slide.dataset.luma = String(luma);
+    }
+
+    // behind the caption: its own layout box within the slide
+    // (offset* is transform-independent, so mid-animation is fine)
+    const caption = slide.querySelector<HTMLElement>(".project-caption");
+    if (caption) {
+      const luma = luminanceBehind(media, {
+        left: caption.offsetLeft - PAD,
+        top: caption.offsetTop - PAD,
+        width: caption.offsetWidth + PAD * 2,
+        height: caption.offsetHeight + PAD * 2,
+      });
+      if (luma !== null) caption.style.color = textColorFor(luma);
+    }
+
+    slide.dataset.sampled = "true";
+    // the nav may be sitting on this slide right now — let it re-check
+    slide.dispatchEvent(new CustomEvent("slide-sampled", { bubbles: true }));
+  };
+
+  // when media is ready, sample; otherwise wait for it
+  const analyzeWhenReady = (slide: HTMLElement) => {
+    const media = slide.querySelector<Media>("img, video");
+    if (!media) return;
+    const ready =
+      media instanceof HTMLVideoElement
+        ? media.readyState >= 2
+        : media.complete && media.naturalWidth > 0;
+    if (ready) {
+      analyzeSlide(slide);
+    } else {
+      media.addEventListener(
+        media instanceof HTMLVideoElement ? "loadeddata" : "load",
+        () => analyzeSlide(slide),
+        { once: true },
+      );
+    }
+  };
+
+  const mobileLayout = window.matchMedia("(max-width: 968px)");
+  // below the breakpoint the same carousel runs vertically: images snap
+  // their top edge to the top of the screen, loop, and keep the
+  // deep-link/travel/color behaviors
+  const isVertical = mobileLayout.matches;
+
+  if (gallery) {
+    // ── travel-to-linked-image (spassky-style) ──────────────────────
+    // A figure link on /about stores its target here before navigating;
+    // we then resume where the gallery was left and glide to the target
+    // over the palette blocks instead of jumping straight to it.
+    const TARGET_KEY = "galleryTarget";
+    const RESUME_KEY = "gallerySlide";
+
+    const travelTarget = sessionStorage.getItem(TARGET_KEY);
+    sessionStorage.removeItem(TARGET_KEY);
+    if (travelTarget) {
+      // the link's #img-N would make hashNavigation jump straight to the
+      // target on init — strip it; it comes back when the travel arrives
+      history.replaceState(null, "", window.location.pathname);
+    }
+
+    const swiper = new Swiper(gallery, {
+      modules: [Mousewheel, Keyboard, HashNavigation],
+      direction: isVertical ? "vertical" : "horizontal",
+      slidesPerView: "auto", // slides keep their natural (variable) sizes
+      loop: true, // wraps around in both directions
+      loopAdditionalSlides: 2, // extra buffer around the loop seam
+      roundLengths: true, // integer positions — fractional sizes drift the snap grid
+      speed: 425,
+      // keep the current image in the URL (#img-N): refresh restores it,
+      // and /#img-N links (e.g. from the About page) open that image.
+      // replaceState avoids one history entry per scrolled image;
+      // watchState makes hash links and back/forward navigate the gallery
+      hashNavigation: {
+        replaceState: true,
+        watchState: true,
+      },
+      // one slide per scroll gesture, however hard you scroll —
+      // Swiper's mousewheel module swallows the trackpad inertia tail
+      mousewheel: {
+        enabled: true,
+        releaseOnEdges: true,
+        sensitivity: 10,
+        thresholdDelta: 10,
+      },
+      keyboard: { enabled: !isVertical },
+      on: {
+        // click the far half of the screen → next image, near half → previous
+        // (right/left on desktop, bottom/top on mobile)
+        click(swiper, event) {
+          const target = event.target;
+          if (target instanceof Element && target.closest("a")) return;
+          let goNext: boolean | null = null;
+          if (isVertical) {
+            if ("clientY" in event && typeof event.clientY === "number")
+              goNext = event.clientY > window.innerHeight / 2;
+          } else if ("clientX" in event && typeof event.clientX === "number") {
+            goNext = event.clientX > window.innerWidth / 2;
+          }
+          if (goNext === null) return;
+          if (goNext) swiper.slideNext();
+          else swiper.slidePrev();
+        },
+      },
+    });
+
+    // images reserve their size via width/height attributes; only videos
+    // (no dimensions in Sanity file metadata) need a re-measure on load —
+    // and after their width changes, re-snap so the grid stays aligned
+    gallery.querySelectorAll("video").forEach((video) => {
+      video.addEventListener(
+        "loadedmetadata",
+        () => {
+          swiper.update();
+          swiper.slideToLoop(swiper.realIndex, 0, false);
+        },
+        { once: true },
+      );
+    });
+
+    // nav text color follows the brightness of the slide underneath it:
+    // sampled top-strip luminance when available, palette fallback otherwise
+    const updateNavColor = () => {
+      if (!nav) return;
+      const active = swiper.slides[swiper.activeIndex];
+      const luma = Number(active?.dataset.luma);
+      if (!Number.isNaN(luma)) nav.style.color = textColorFor(luma);
+    };
+
+    // if the CDN rejects the CORS request (origin missing from the Sanity
+    // project's allowlist → 403), reload the media without crossorigin so
+    // it still displays; color sampling then falls back to palette values
+    gallery.querySelectorAll<Media>("img, video").forEach((media) => {
+      media.addEventListener("error", () => {
+        if (media.dataset.corsRetried || !media.crossOrigin) return;
+        media.dataset.corsRetried = "true";
+        media.removeAttribute("crossorigin");
+        if (media instanceof HTMLImageElement) {
+          const { src, srcset } = media;
+          media.srcset = "";
+          media.src = "";
+          media.srcset = srcset;
+          media.src = src;
+        } else {
+          const src = media.src;
+          media.src = "";
+          media.src = src;
+          media.load(); // autoplay attribute resumes playback when ready
+        }
+      });
+    });
+
+    gallery
+      .querySelectorAll<HTMLElement>(".swiper-slide")
+      .forEach(analyzeWhenReady);
+    gallery.addEventListener("slide-sampled", updateNavColor);
+    swiper.on("slideChange", updateNavColor);
+    updateNavColor();
+
+    // remember where the visitor left the gallery — the travel starts here
+    swiper.on("slideChange", () => {
+      sessionStorage.setItem(RESUME_KEY, String(swiper.realIndex));
+    });
+
+    if (travelTarget) {
+      // "img-12" → slide index 11 (hash numbering is 1-based data order)
+      const targetIndex = parseInt(travelTarget.replace("img-", ""), 10) - 1;
+      const resumeIndex = parseInt(
+        sessionStorage.getItem(RESUME_KEY) ?? "0",
+        10,
+      );
+
+      if (
+        Number.isInteger(targetIndex) &&
+        targetIndex >= 0 &&
+        targetIndex !== resumeIndex
+      ) {
+        swiper.slideToLoop(resumeIndex, 0, false); // start where they left off
+
+        // distance-scaled duration, same curve as the reference site
+        const distance = Math.abs(targetIndex - resumeIndex);
+        const duration = Math.min(2100, 300 + Math.sqrt(distance) * 200);
+
+        requestAnimationFrame(() => {
+          gallery.classList.add("traveling"); // photos → palette blocks
+          swiper.slideToLoop(targetIndex, duration);
+          swiper.once("transitionEnd", () => {
+            gallery.classList.remove("traveling"); // photos fade back in
+          });
+        });
+      }
+    }
+  }
+</script>

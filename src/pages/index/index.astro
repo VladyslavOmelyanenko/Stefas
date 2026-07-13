@@ -1,0 +1,380 @@
+---
+import BaseLayout from "../../layouts/BaseLayout.astro";
+import Nav from "../../components/Nav.astro";
+import CategoryTable from "../../components/CategoryTable.astro";
+
+import { sanityClient } from "../../lib/sanity";
+
+type Contact = { _key: string; label: string; url?: string };
+type Collaborator = {
+  _key: string;
+  name: string;
+  projectId?: string;
+  href?: string;
+};
+type Entry = {
+  _key: string;
+  date?: string;
+  title: string;
+  column2?: string;
+  column3?: string;
+  description?: string;
+  projectId?: string;
+  tagId?: string;
+  anchorId?: string;
+  collaborators?: Collaborator[];
+};
+type Category = { _id: string; title: string; entries?: Entry[] };
+
+// Single "about" document (there should only ever be one)
+const about = await sanityClient.fetch<{
+  locationContacts?: Contact[];
+  bio?: string;
+}>(`*[_type == "about"][0]{
+  locationContacts[]{ _key, label, url },
+  bio
+}`);
+
+// Category sections in the order set in the studio
+const categories = await sanityClient.fetch<Category[]>(`
+  *[_type == "category"] | order(orderRank){
+    _id,
+    title,
+    entries[]{ _key, date, title, column2, column3, description,
+      "projectId": project._ref,
+      "tagId": tag._ref,
+      collaborators[]{ _key, name, "projectId": project._ref } }
+  }
+`);
+
+// References is the first category; the tags row only sticks while it's in view
+const [referencesCategory, ...otherCategories] = categories;
+
+// Gallery numbering: same order as the landing page's slides (#img-N),
+// so figure ranges always correlate with what's actually in the gallery
+const galleryProjects = await sanityClient.fetch<
+  { _id: string; count: number | null }[]
+>(`
+  *[_type == "project"] | order(orderRank){ _id, "count": count(images) }
+`);
+
+// projectId → { "img. 4-7", start: 4 } (start feeds the /#img-N deep link)
+const figureByProject: Record<string, { label: string; start: number }> = {};
+let figureCursor = 1;
+for (const p of galleryProjects) {
+  const n = p.count ?? 0;
+  if (n === 0) continue;
+  figureByProject[p._id] = {
+    label:
+      n === 1
+        ? `img. ${figureCursor}`
+        : `img. ${figureCursor}-${figureCursor + n - 1}`,
+    start: figureCursor,
+  };
+  figureCursor += n;
+}
+
+// resolve collaborator names with a linked project into gallery deep links
+for (const category of categories) {
+  for (const entry of category.entries ?? []) {
+    for (const collaborator of entry.collaborators ?? []) {
+      const figure = collaborator.projectId
+        ? figureByProject[collaborator.projectId]
+        : undefined;
+      if (figure) collaborator.href = `/#img-${figure.start}`;
+    }
+  }
+}
+
+// All tags (Installations, Publications, Print, …) in studio drag-order
+const tags = await sanityClient.fetch<{ _id: string; title: string }[]>(`
+  *[_type == "tag"] | order(orderRank){ _id, title }
+`);
+
+// "Workshops & Presentations, " → "workshops-presentations" (anchor ids)
+const slugify = (s: string) =>
+  s
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+
+// References entries grouped by tag, following the studio's tag order;
+// untagged entries keep their manual order at the end. The first entry
+// of each group gets an anchor (#tag-…) the tags row links to.
+const tagIndex = new Map(tags.map((tag, i) => [tag._id, i]));
+const tagTitle = new Map(tags.map((tag) => [tag._id, tag.title]));
+if (referencesCategory?.entries) {
+  const sorted = [...referencesCategory.entries].sort(
+    (a, b) =>
+      (a.tagId ? (tagIndex.get(a.tagId) ?? tags.length) : tags.length) -
+      (b.tagId ? (tagIndex.get(b.tagId) ?? tags.length) : tags.length),
+  );
+  let previousTag: string | undefined;
+  for (const entry of sorted) {
+    if (entry.tagId && entry.tagId !== previousTag) {
+      const title = tagTitle.get(entry.tagId);
+      if (title) entry.anchorId = `tag-${slugify(title)}`;
+    }
+    previousTag = entry.tagId;
+  }
+  referencesCategory.entries = sorted;
+}
+---
+
+<BaseLayout title="Stefaniia Bodnia" color="black">
+  <Nav position="absolute" />
+
+  <main class="about">
+    <header class="about-header">
+      <ul class="contacts">
+        {
+          about?.locationContacts?.map((item) => (
+            <li>
+              {item.url ? <a href={item.url}>{item.label}</a> : item.label}
+            </li>
+          ))
+        }
+      </ul>
+      <p class="bio">{about?.bio}</p>
+    </header>
+    <section class="results">
+      <div class="table-head">
+        <ul class="category-nav">
+          {
+            categories.map((category) => (
+              <li>
+                <a href={`#${slugify(category.title)}`}>{category.title}</a>
+              </li>
+            ))
+          }
+        </ul>
+      </div>
+      {
+        referencesCategory && (
+          <div class="references-block" id={slugify(referencesCategory.title)}>
+            <ul class="tags-list">
+              {tags.map((tag) => (
+                <li>
+                  <a href={`#tag-${slugify(tag.title)}`}>{tag.title}</a>
+                </li>
+              ))}
+            </ul>
+            <article>
+              <CategoryTable
+                category={referencesCategory}
+                showTitle={false}
+                figures={figureByProject}
+              />
+            </article>
+          </div>
+        )
+      }
+      {
+        otherCategories.map((category) => (
+          <article id={slugify(category.title)}>
+            <CategoryTable category={category} />
+          </article>
+        ))
+      }
+    </section>
+  </main>
+</BaseLayout>
+
+<script>
+  // figure links (/#img-N): store the target so the gallery travels to it
+  // (animated over the palette blocks) instead of jumping straight there
+  document.addEventListener("click", (event) => {
+    if (!(event.target instanceof Element)) return;
+    const link = event.target.closest<HTMLAnchorElement>('a[href^="/#img-"]');
+    if (link) sessionStorage.setItem("galleryTarget", link.hash.slice(1));
+  });
+
+  // scroll-spy: the category whose section is under the sticky nav is
+  // "active" (black); the others stay grey
+  const navLinks = Array.from(
+    document.querySelectorAll<HTMLAnchorElement>('.category-nav a[href^="#"]'),
+  );
+  const sections = navLinks
+    .map((link) => document.getElementById(link.hash.slice(1)))
+    .filter((section): section is HTMLElement => section !== null);
+
+  const tagsList = document.querySelector<HTMLElement>(".tags-list");
+
+  // tag-group anchors inside the references table (first row of each group)
+  const tagLinks = Array.from(
+    document.querySelectorAll<HTMLAnchorElement>('.tags-list a[href^="#"]'),
+  );
+  const tagGroups = tagLinks
+    .map((link) => document.getElementById(link.hash.slice(1)))
+    .filter((group): group is HTMLElement => group !== null);
+
+  const updateActive = () => {
+    // last section whose top has passed the nav line is the current one
+    const navLine = 40; // sticky nav height + a little tolerancez
+    let activeId = sections[0]?.id;
+    for (const section of sections) {
+      if (section.getBoundingClientRect().top <= navLine) activeId = section.id;
+    }
+    navLinks.forEach((link) =>
+      link.classList.toggle("active", link.hash === `#${activeId}`),
+    );
+    // past References, the pushed-out tags row is spent — hide it so its
+    // border can't double up with the nav's bottom border
+    tagsList?.classList.toggle("is-hidden", activeId !== sections[0]?.id);
+
+    // same idea one level down: the tag group under the tags row is active
+    const tagLine = 75; // nav + tags row heights + a little tolerance
+    let activeTag = tagGroups[0]?.id;
+    for (const group of tagGroups) {
+      if (group.getBoundingClientRect().top <= tagLine) activeTag = group.id;
+    }
+    tagLinks.forEach((link) =>
+      link.classList.toggle("active", link.hash === `#${activeTag}`),
+    );
+  };
+
+  document.addEventListener(
+    "scroll",
+    () => requestAnimationFrame(updateActive),
+    { passive: true },
+  );
+  updateActive();
+</script>
+
+<style lang="scss">
+  /* same 6-column grid as Nav so everything lines up */
+  .about-header,
+  .column-labels,
+  .entry-row {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    column-gap: 10px;
+  }
+
+  .about-header {
+    margin: var(--body-margin) var(--body-margin) 0;
+
+    .contacts {
+      grid-column: 2 / 3;
+      list-style: none;
+    }
+
+    .bio {
+      grid-column: 4 / -1;
+    }
+  }
+  .results {
+    padding: 0 var(--body-margin);
+    /* height of the stuck .table-head — one knob for the tags-row offset
+       and the anchor scroll position */
+    --table-head-h: 33px;
+    /* height of the stuck tags row — tag-group anchors land below both */
+    --tags-list-h: 30px;
+
+    /* category sections: anchor scrolling stops with the section title
+       (or, for References, the tags row) right below the sticky nav */
+    article,
+    .references-block {
+      scroll-margin-top: var(--table-head-h);
+    }
+
+    /* the last section fills the viewport below the nav, so even a short
+       one can scroll all the way up to the nav line (and become active) */
+    > :last-child {
+      min-height: calc(100vh - var(--table-head-h));
+    }
+
+    /* sticks to the viewport top while .results is in view */
+    .table-head {
+      position: sticky;
+      top: 0;
+      z-index: 2; /* above .tags-list so the tags slide under it when pushed out */
+      background: white; /* so table rows don't show through when stuck */
+      padding-top: 10px;
+    }
+
+    .category-nav li:not(:last-child)::after {
+      content: ",\00a0";
+    }
+    .category-nav {
+      display: flex;
+      flex-wrap: wrap;
+      border-bottom: 1px solid black;
+      padding-bottom: 5px;
+
+      a {
+        color: #808080;
+        transition: color 0.2s ease;
+        &:hover {
+          text-decoration: none;
+          color: #000;
+        }
+      }
+      a.active {
+        color: #000;
+      }
+    }
+
+    .tags-list {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      column-gap: 10px;
+      border-bottom: 1px solid black;
+
+      /* sticks below the category nav, but only within .references-block —
+         once the References table scrolls past, its parent's bottom edge
+         pushes the tags row out of view */
+      position: sticky;
+      top: var(--table-head-h);
+      z-index: 1;
+      background: white;
+      padding: 5px 0;
+
+      &.is-hidden {
+        visibility: hidden;
+      }
+
+      li {
+        // padding: 5px 0;
+      }
+
+      a {
+        color: #808080;
+        transition: color 0.2s ease;
+        &:hover {
+          text-decoration: none;
+          color: #000;
+        }
+      }
+      a.active {
+        color: #000;
+      }
+    }
+  }
+
+  @media (max-width: 968px) {
+    .results {
+      --table-head-h: 48px; /* Tweak this exact number until it sits perfectly */
+    }
+    .about-header,
+    .column-labels,
+    .entry-row {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      // grid-template-rows: repeat(2, 1fr);
+      column-gap: 10px;
+    }
+
+    .about-header .bio {
+      grid-column: 1 / -1;
+      margin-top: 1rem;
+    }
+
+    .results .tags-list {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+    }
+  }
+</style>
