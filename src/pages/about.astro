@@ -1,9 +1,9 @@
 ---
-import BaseLayout from "../../layouts/BaseLayout.astro";
-import Nav from "../../components/Nav.astro";
-import CategoryTable from "../../components/CategoryTable.astro";
+import BaseLayout from "../layouts/BaseLayout.astro";
+import Nav from "../components/Nav.astro";
+import CategoryTable from "../components/CategoryTable.astro";
 
-import { sanityClient } from "../../lib/sanity";
+import { sanityClient } from "../lib/sanity";
 
 type Contact = { _key: string; label: string; url?: string };
 type Collaborator = {
