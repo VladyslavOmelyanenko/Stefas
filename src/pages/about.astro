@@ -22,6 +22,7 @@ type Entry = {
   projectId?: string;
   tagId?: string;
   anchorId?: string;
+  projectAnchorId?: string;
   collaborators?: Collaborator[];
 };
 type Category = { _id: string; title: string; entries?: Entry[] };
@@ -117,12 +118,14 @@ if (referencesCategory?.entries) {
       if (title) entry.anchorId = `tag-${slugify(title)}`;
     }
     previousTag = entry.tagId;
+    // target for the gallery captions: /about#project-<id>
+    if (entry.projectId) entry.projectAnchorId = `project-${entry.projectId}`;
   }
   referencesCategory.entries = sorted;
 }
 ---
 
-<BaseLayout title="Stefaniia Bodnia" color="black">
+<BaseLayout title="Stefaniia Bodnia — Index" color="black">
   <Nav position="absolute" />
 
   <main class="about">
@@ -189,6 +192,20 @@ if (referencesCategory?.entries) {
     const link = event.target.closest<HTMLAnchorElement>('a[href^="/#img-"]');
     if (link) sessionStorage.setItem("galleryTarget", link.hash.slice(1));
   });
+
+  // arriving from a gallery caption: the page loads at the top, then
+  // glides down to the project's row (same feel as the nav links)
+  const aboutTarget = sessionStorage.getItem("aboutTarget");
+  sessionStorage.removeItem("aboutTarget");
+  if (aboutTarget) {
+    const row = document.getElementById(aboutTarget);
+    if (row) {
+      requestAnimationFrame(() => {
+        row.scrollIntoView({ behavior: "smooth" });
+        history.replaceState(null, "", `#${aboutTarget}`);
+      });
+    }
+  }
 
   // scroll-spy: the category whose section is under the sticky nav is
   // "active" (black); the others stay grey

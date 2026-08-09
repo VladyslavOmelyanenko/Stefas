@@ -13,6 +13,7 @@ type Entry = {
   description?: string;
   projectId?: string;
   anchorId?: string;
+  projectAnchorId?: string;
   collaborators?: Collaborator[];
 };
 type Category = { _id: string; title: string; entries?: Entry[] };
@@ -40,7 +41,7 @@ const figureFor = (entry: Entry) =>
       category.entries?.map((entry) => (
         <div class="entry" id={entry.anchorId}>
           {entry.date && <div class="table-row-date">{entry.date}</div>}
-          <div class="table-row">
+          <div class="table-row" id={entry.projectAnchorId}>
             {entry.title && (
               <div class="element element-title">{entry.title}</div>
             )}
@@ -103,7 +104,8 @@ const figureFor = (entry: Entry) =>
        the height vars cascade down from .results on the page.
        -2px tucks the group under the tags row so fractional row heights
        can't round into a white sliver above the group */
-    .entry[id] {
+    .entry[id],
+    .table-row[id] {
       scroll-margin-top: calc(
         var(--table-head-h, 33px) + var(--tags-list-h, 30px) - 2px
       );

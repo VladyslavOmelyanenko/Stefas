@@ -36,6 +36,14 @@ const projects = await sanityClient.fetch<Project[]>(`
   }
 `);
 
+// projects that actually have a row in the references table — only those
+// captions become links (the rest would land on /about with nothing to hit)
+const linkedProjectIds = new Set(
+  await sanityClient.fetch<string[]>(`
+    array::unique(*[_type == "category"].entries[].project._ref)
+  `),
+);
+
 // responsive variants served via srcset (heights; the browser picks by width)
 const SRCSET_HEIGHTS = [800, 1200, 1600, 2000];
 
@@ -53,6 +61,7 @@ const slides = projects.flatMap((project) =>
   (project.images ?? []).map((item, index) => ({
     item,
     title: project.title,
+    projectId: project._id,
     isFirstOfProject: index === 0,
   })),
 );
@@ -79,7 +88,7 @@ const textColorFor = (luma: number | null) =>
 <section class="projects-gallery swiper">
   <div class="swiper-wrapper">
     {
-      slides.map(({ item, title, isFirstOfProject }, index) => (
+      slides.map(({ item, title, projectId, isFirstOfProject }, index) => (
         <div
           class="swiper-slide"
           data-hash={`img-${index + 1}`}
@@ -91,6 +100,7 @@ const textColorFor = (luma: number | null) =>
               class="project-media-item"
               src={item.url}
               crossorigin="anonymous"
+              preload="metadata"
               muted
               loop
               playsinline
@@ -115,7 +125,13 @@ const textColorFor = (luma: number | null) =>
               class="project-caption"
               style={`color: ${textColorFor(hexLuminance(item.palette))}`}
             >
-              {title}
+              {/* links to this project's row in the references table,
+                  when it has one */}
+              {linkedProjectIds.has(projectId) ? (
+                <a href={`/about#project-${projectId}`}>{title}</a>
+              ) : (
+                title
+              )}
             </h2>
           )}
         </div>
@@ -171,24 +187,20 @@ const textColorFor = (luma: number | null) =>
     /* caption overlays the top of its image, tucked under the fixed nav;
        its color still comes from the sampled pixels behind it */
     .project-caption {
-      position: absolute;
       top: calc(2rem + 10px);
       bottom: auto;
-      left: 0;
-      width: 100%;
-      max-width: none;
-      /* padding: 0 var(--body-margin); */
     }
   }
 
-  /* bottom-left corner of the project's first image, scrolls with it */
+  /* bottom-left corner of the project's first image, scrolls with it —
+     stays within its own image's width so long titles wrap onto more
+     lines instead of running over the neighbouring slide */
   .project-caption {
     position: absolute;
     bottom: var(--body-margin);
-    left: var(--body-margin);
-    z-index: 1; /* above neighbouring slides if the text is wider than its image */
-    width: max-content;
-    max-width: 90vw;
+    left: 0;
+    width: 100%;
+    padding: 0 var(--body-margin);
     transition: color 0.3s ease; /* soften black↔white flips */
   }
 </style>
@@ -199,6 +211,21 @@ const textColorFor = (luma: number | null) =>
 
   const gallery = document.querySelector<HTMLElement>(".projects-gallery");
   const nav = document.querySelector<HTMLElement>(".nav");
+
+  // caption → references row: hand the target to /about so it can scroll
+  // there smoothly, instead of the browser jumping straight to the anchor
+  document.addEventListener("click", (event) => {
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0)
+      return; // let cmd/ctrl-click open a new tab as usual
+    if (!(event.target instanceof Element)) return;
+    const link = event.target.closest<HTMLAnchorElement>(
+      'a[href^="/about#project-"]',
+    );
+    if (!link) return;
+    event.preventDefault();
+    sessionStorage.setItem("aboutTarget", link.hash.slice(1));
+    window.location.href = "/about";
+  });
 
   // ── adaptive text color ────────────────────────────────────────────
   // Sample the exact image pixels sitting behind the nav text and behind
@@ -319,6 +346,28 @@ const textColorFor = (luma: number | null) =>
     }
   };
 
+  // resolves once every video knows its size (readyState >= HAVE_METADATA),
+  // or after `timeout` so a slow/broken file can't hold up the carousel
+  const waitForVideoMetadata = (root: HTMLElement, timeout = 2000) => {
+    const pending = Array.from(root.querySelectorAll("video")).filter(
+      (video) => video.readyState < 1,
+    );
+    if (!pending.length) return Promise.resolve();
+    return Promise.race([
+      Promise.all(
+        pending.map(
+          (video) =>
+            new Promise<void>((resolve) => {
+              const done = () => resolve();
+              video.addEventListener("loadedmetadata", done, { once: true });
+              video.addEventListener("error", done, { once: true });
+            }),
+        ),
+      ),
+      new Promise<void>((resolve) => setTimeout(resolve, timeout)),
+    ]).then(() => undefined);
+  };
+
   const mobileLayout = window.matchMedia("(max-width: 968px)");
   // below the breakpoint the same carousel runs vertically: images snap
   // their top edge to the top of the screen, loop, and keep the
@@ -340,6 +389,13 @@ const textColorFor = (luma: number | null) =>
       // target on init — strip it; it comes back when the travel arrives
       history.replaceState(null, "", window.location.pathname);
     }
+
+    // Images declare width/height, so their slides are correctly sized from
+    // the first paint. Videos don't: until metadata arrives a <video> is
+    // 300x150, i.e. a 2:1 slide about twice the viewport wide. Building the
+    // loop's snap grid on those wrong widths is what made an early "prev"
+    // jump several images — so wait (briefly) for the real sizes first.
+    await waitForVideoMetadata(gallery);
 
     const swiper = new Swiper(gallery, {
       modules: [Mousewheel, Keyboard, HashNavigation],
@@ -385,6 +441,28 @@ const textColorFor = (luma: number | null) =>
         },
       },
     });
+
+    // Step by slide index instead of by snap position.
+    //
+    // Swiper's own slidePrev() captures `snapGrid` *before* calling loopFix(),
+    // and loopFix() rebuilds that grid when it reorders slides for the loop.
+    // With slidesPerView:"auto" the stale grid no longer contains the new
+    // translate, the lookup fails, and it falls back to slide 0 — which after
+    // prepending is several images back (a "prev" jumped 3 at a time).
+    // slideToLoop() is index-based, so it always moves exactly one image.
+    // The mousewheel module calls these methods too, so it inherits the fix.
+    const stepTo = (offset: number, speed?: number, runCallbacks?: boolean) => {
+      const total = swiper.slides.length;
+      return swiper.slideToLoop(
+        (swiper.realIndex + offset + total) % total,
+        speed,
+        runCallbacks,
+      );
+    };
+    swiper.slidePrev = ((speed?: number, runCallbacks?: boolean) =>
+      stepTo(-1, speed, runCallbacks)) as typeof swiper.slidePrev;
+    swiper.slideNext = ((speed?: number, runCallbacks?: boolean) =>
+      stepTo(1, speed, runCallbacks)) as typeof swiper.slideNext;
 
     // images reserve their size via width/height attributes; only videos
     // (no dimensions in Sanity file metadata) need a re-measure on load —
