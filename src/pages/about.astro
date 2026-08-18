@@ -226,9 +226,26 @@ if (referencesCategory?.entries) {
     .map((link) => document.getElementById(link.hash.slice(1)))
     .filter((group): group is HTMLElement => group !== null);
 
+  // both sticky bars wrap onto more lines on narrow screens, so their
+  // heights are measured rather than guessed — otherwise the tags row
+  // sticks too high and slides under the category nav
+  const results = document.querySelector<HTMLElement>(".results");
+  const tableHead = document.querySelector<HTMLElement>(".table-head");
+  let tableHeadH = 0;
+  let tagsListH = 0;
+
+  const measureStickyBars = () => {
+    tableHeadH = tableHead?.getBoundingClientRect().height ?? 0;
+    tagsListH = tagsList?.getBoundingClientRect().height ?? 0;
+    results?.style.setProperty("--table-head-h", `${tableHeadH}px`);
+    results?.style.setProperty("--tags-list-h", `${tagsListH}px`);
+  };
+
+  measureStickyBars();
+
   const updateActive = () => {
     // last section whose top has passed the nav line is the current one
-    const navLine = 40; // sticky nav height + a little tolerancez
+    const navLine = tableHeadH + 8; // sticky nav height + a little tolerance
     let activeId = sections[0]?.id;
     for (const section of sections) {
       if (section.getBoundingClientRect().top <= navLine) activeId = section.id;
@@ -241,7 +258,7 @@ if (referencesCategory?.entries) {
     tagsList?.classList.toggle("is-hidden", activeId !== sections[0]?.id);
 
     // same idea one level down: the tag group under the tags row is active
-    const tagLine = 75; // nav + tags row heights + a little tolerance
+    const tagLine = tableHeadH + tagsListH + 8; // both bars + a little tolerance
     let activeTag = tagGroups[0]?.id;
     for (const group of tagGroups) {
       if (group.getBoundingClientRect().top <= tagLine) activeTag = group.id;
@@ -256,6 +273,15 @@ if (referencesCategory?.entries) {
     () => requestAnimationFrame(updateActive),
     { passive: true },
   );
+
+  // re-measure whenever the bars rewrap (resize, rotation, font load)
+  const stickyObserver = new ResizeObserver(() => {
+    measureStickyBars();
+    updateActive();
+  });
+  if (tableHead) stickyObserver.observe(tableHead);
+  if (tagsList) stickyObserver.observe(tagsList);
+
   updateActive();
 </script>
 
@@ -284,7 +310,9 @@ if (referencesCategory?.entries) {
   .results {
     padding: 0 var(--body-margin);
     /* height of the stuck .table-head — one knob for the tags-row offset
-       and the anchor scroll position */
+       and the anchor scroll position. Both vars are starting values only:
+       the page script measures the real heights (the bars rewrap on narrow
+       screens) and overwrites them inline */
     --table-head-h: 33px;
     /* height of the stuck tags row — tag-group anchors land below both */
     --tags-list-h: 30px;
@@ -372,7 +400,10 @@ if (referencesCategory?.entries) {
 
   @media (max-width: 968px) {
     .results {
-      --table-head-h: 48px; /* Tweak this exact number until it sits perfectly */
+      /* three wrapped lines of category nav, two of tags — the script
+         replaces both with the measured heights as soon as it runs */
+      --table-head-h: 66px;
+      --tags-list-h: 45px;
     }
     .about-header,
     .column-labels,
