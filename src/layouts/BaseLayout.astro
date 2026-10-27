@@ -25,6 +25,16 @@ import "../styles/_variables.scss";
     />
     <meta content="Stefaniia Bodnia" property="og:site_name" />
     <title>{title}</title>
+    <!-- iOS Safari inflates the text of wide blocks on its own — full-width
+         project captions and descriptions came out bigger than the nav and
+         table cells. Inline so the build can't strip the -webkit- prefix,
+         which is the only one Safari reads -->
+    <style is:inline>
+      html {
+        -webkit-text-size-adjust: 100%;
+        text-size-adjust: 100%;
+      }
+    </style>
   </head>
   <body style={`color: ${color}`}>
     <!-- shared header / nav goes here -->

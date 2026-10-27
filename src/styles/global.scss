@@ -1,11 +1,6 @@
 html {
   scroll-behavior: smooth; /* anchor links glide instead of jumping */
-
-  /* iOS Safari inflates the text of wide blocks on its own — the
-     full-width project descriptions came out bigger than the title and
-     materials cells beside them. Keep every size exactly as authored */
-  -webkit-text-size-adjust: 100%;
-  text-size-adjust: 100%;
+  /* text-size-adjust lives inline in BaseLayout — see the note there */
 }
 
 @font-face {
